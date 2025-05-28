@@ -1,14 +1,18 @@
 use serenity::{all::*, async_trait, prelude::*};
+use tokio::sync::RwLockReadGuard;
 
 mod parser;
+
+struct IreneKey;
+impl TypeMapKey for IreneKey {
+    type Value = Irene;
+}
 
 struct Irene {
     admins: Vec<u64>,
 }
 
-struct Handler {
-    irene: Irene,
-}
+struct Handler;
 
 struct CommandDetails {
     name: &'static str,
@@ -17,7 +21,7 @@ struct CommandDetails {
 #[async_trait]
 trait IreneCommand: Send + Sync {
     fn details(&self) -> CommandDetails;
-    async fn run(&self, irene: &Irene, ctx: Context, msg: Message);
+    async fn run(&self, ctx: Context, msg: Message);
 }
 
 struct PurgeCommand;
@@ -27,7 +31,7 @@ impl IreneCommand for PurgeCommand {
     fn details(&self) -> CommandDetails {
         CommandDetails { name: "!purge" }
     }
-    async fn run(&self, irene: &Irene, ctx: Context, msg: Message) {
+    async fn run(&self, ctx: Context, msg: Message) {
         let amount = msg
             .content
             .split_whitespace()
@@ -54,8 +58,14 @@ impl IreneCommand for ListAdminsCommand {
     fn details(&self) -> CommandDetails {
         CommandDetails { name: "!admins" }
     }
-    async fn run(&self, irene: &Irene, ctx: Context, msg: Message) {
-        let admins = irene.admins.iter().map(|id| format!("<@{}>", id));
+    async fn run(&self, ctx: Context, msg: Message) {
+        let read = ctx.data.read().await;
+        let admins = read
+            .get::<IreneKey>()
+            .unwrap()
+            .admins
+            .iter()
+            .map(|id| format!("<@{}>", id));
         msg.channel_id
             .say(
                 &ctx.http,
@@ -69,13 +79,13 @@ impl IreneCommand for ListAdminsCommand {
 struct CommandRouter;
 
 impl CommandRouter {
-    async fn message(&self, irene: &Irene, ctx: Context, msg: Message) {
+    async fn message(&self, ctx: Context, msg: Message) {
         let commands: Vec<Box<dyn IreneCommand>> =
             vec![Box::new(PurgeCommand), Box::new(ListAdminsCommand)];
         for command in commands.iter() {
             if msg.content.starts_with(command.details().name) {
                 println!("Running command: {}", command.details().name);
-                command.run(irene, ctx.clone(), msg.clone()).await;
+                command.run(ctx.clone(), msg.clone()).await;
             }
         }
     }
@@ -100,7 +110,7 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        CommandRouter.message(&self.irene, ctx, msg).await;
+        CommandRouter.message(ctx, msg).await;
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -122,11 +132,13 @@ async fn main() {
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(token, intents)
-        .event_handler(Handler {
-            irene: Irene { admins },
-        })
+        .event_handler(Handler)
         .await
         .expect("Error creating client");
-
+    client
+        .data
+        .write()
+        .await
+        .insert::<IreneKey>(Irene { admins });
     client.start().await.unwrap();
 }
